@@ -5,24 +5,33 @@ use thiserror::Error;
 
 use std::marker::PhantomData;
 use std::env;
+use std::path::Path;
 
-/// These marker traits are supposed to protect the client from invalid api key users
+use dotenv_loader::parser::Parser;
+
+/// Unit struct that protects the client from invalid api key users
 #[derive(Debug)]
 pub struct Validated;
 
+/// Unit struct that protects the client from invalid api key users
 #[derive(Debug)]
 pub struct Invalidated;
 
 #[derive(Error, Debug)]
-pub enum GmapsClientError {
+pub enum GMapsClientError {
     #[error("Failed to validate API KEY")]
     InvalidApiKey,
     
+    #[error("Failed to load the Google Maps API KEY")]
+    ApiKeyLoadingFailure,
+
     #[error("Failed sending the request")]
     RequestFailure,
     
     #[error("Missing API KEY, the GMAPS_API_KEY variable may not be set")]
     MissingApiKey,
+
+    
 }
 
 #[derive(Debug)]
@@ -34,17 +43,32 @@ pub struct GMapsClient<T = Invalidated> {
 
 impl GMapsClient<Invalidated> {
 
+    pub fn load_api_key() -> Result<String, GMapsClientError> {
+        
+        let mut dotenv_parser = Parser::new();
+        let _res = dotenv_parser.parse(Path::new(".env"));
+
+        if let Ok(mut api_key) = env::var("GMAPS_API_KEY") {
+            if api_key.starts_with('"') && api_key.ends_with('"') {
+                api_key.remove(0);
+                api_key.remove(api_key.len()-1);
+            }
+            return Ok(api_key);
+        }
+
+        Err(GMapsClientError::ApiKeyLoadingFailure)
+    }
+
     /// Constructs a GMapsClient object 
     /// Env variable GMAPS_API_KEY must be set to a valid api key otherwise
     /// this function errors out
     /// 
-    /// returns: Result<GMapsClient, GmapsCError>
-    pub fn new() -> Result<GMapsClient<Invalidated>, GmapsClientError> {
+    /// returns: Result<GMapsClient, GmapsClientError>
+    pub fn new() -> Result<GMapsClient<Invalidated>, GMapsClientError> {
 
-        let api_key = match env::var("GMAPS_API_KEY") {
-            Ok(val) => Ok(val),
-            Err(_) => Err(GmapsClientError::MissingApiKey),
-        }?;
+        GMapsClient::load_api_key()?;
+
+        let api_key = GMapsClient::load_api_key()?;
 
         Ok(GMapsClient {
             api_key: api_key,
@@ -58,7 +82,7 @@ impl GMapsClient<Invalidated> {
     /// to the api, consuming self in the process 
     /// 
     /// returns: Result<GMapsClient<Validated>, GmapsClientError>
-    pub async fn validate_api_key(self) -> Result<GMapsClient<Validated>, GmapsClientError> {
+    pub async fn validate_api_key(self) -> Result<GMapsClient<Validated>, GMapsClientError> {
         
         let base_url = "https://maps.googleapis.com/".to_string();
 
@@ -68,13 +92,13 @@ impl GMapsClient<Invalidated> {
         let response = 
             reqwest::get(url)
             .await
-            .map_err(|_| GmapsClientError::RequestFailure)?
+            .map_err(|_| GMapsClientError::RequestFailure)?
             .json::<serde_json::Value>()
             .await
-            .map_err(|_| GmapsClientError::RequestFailure)?;
+            .map_err(|_| GMapsClientError::RequestFailure)?;
 
         if response["status"] == json!("REQUEST_DENIED") {
-            return Err(GmapsClientError::InvalidApiKey);
+            return Err(GMapsClientError::InvalidApiKey);
         }
         
         Ok(GMapsClient {
@@ -146,6 +170,13 @@ pub mod tests {
     use tokio;
 
     #[tokio::test]
+    pub async fn test_validate_client() {
+        let gmaps_client = GMapsClient::new().expect("Could not create gmaps api client");
+        let gmaps_client = gmaps_client.validate_api_key().await;
+        assert!(gmaps_client.is_ok());
+    }
+
+    #[tokio::test]
     pub async fn test_valid_single_place() {
 
         let gmaps = GMapsClient::new().unwrap();
@@ -153,8 +184,8 @@ pub mod tests {
 
         let response = gmaps.find_places_from_text("pizza party alba iulia").await;
         let results = response["results"].clone();
-
-        println!("{}", results);
+        assert_eq!(results[0]["name"], "Pizza Party");
+        
     }
 
 }
